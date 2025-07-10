@@ -42,6 +42,10 @@ pip install requests
 ### Installation
 
 1. Download the `osdr_downloader.py` script
+   ```bash
+   curl -LO https://raw.githubusercontent.com/asaravia-butler/OSDR_File_Downloader/refs/heads/main/osdr_downloader.py
+   ```
+
 2. Make it executable (optional):
    ```bash
    chmod +x osdr_downloader.py
