@@ -2,16 +2,47 @@
 
 A Python tool for downloading files from NASA's [Open Science Data Repository (OSDR)](https://osdr.nasa.gov/bio/repo/) with advanced filtering and organization capabilities.
 
+## Table of Contents
+
+- [Description](#description)
+- [Installation Instructions](#installation-instructions)
+  - [Prerequisites](#prerequisites)
+  - [Dependencies](#dependencies)
+  - [Installation](#installation)
+  - [Verification](#verification)
+- [Usage Instructions](#usage-instructions)
+  - [Basic Syntax](#basic-syntax)
+  - [Example Commands](#example-commands)
+    - [Basic Usage](#basic-usage)
+    - [Filtering by Measurement and Technology Type](#filtering-by-measurement-and-technology-type)
+    - [File Extension Filtering](#file-extension-filtering)
+    - [Filename Search Filtering](#filename-search-filtering)
+    - [Advanced Filtering](#advanced-filtering)
+    - [Complex Filtering Examples](#complex-filtering-examples)
+- [Parameters](#parameters)
+  - [Parameter Details](#parameter-details)
+- [Output Files and Directory Structure](#output-files-and-directory-structure)
+  - [Directory Structure](#directory-structure)
+  - [TSV File Output (List Mode)](#tsv-file-output-list-mode)
+  - [Directory Naming Convention](#directory-naming-convention)
+  - [File Organization](#file-organization)
+  - [Output Summary Report](#output-summary-report)
+  - [File Metadata Preservation](#file-metadata-preservation)
+  - [Error Handling and Logs](#error-handling-and-logs)
+  - [File Integrity](#file-integrity)
+  - [Download URL Format](#download-url-format)
+
 ## Description
 
 The OSDR File Downloader is a command-line tool that provides programmatic access to files stored in NASA's [Open Science Data Repository (OSDR)](https://osdr.nasa.gov/bio/repo/), which includes omics data from GeneLab and non-omics (e.g. physiologic, phenotypic, imaging, behavioral, etc.) data from ALSDA (Ames Life Sciences Data Archive). The tool uses the [OSDR biodata API](https://visualization.osdr.nasa.gov/biodata/api/) to query, filter, and download files with support for:
 
 - **Intelligent file organization** - Automatically organizes files by measurement type and technology type
 - **GeneLab processed file detection** - Identifies and separates GeneLab processed files using protocol references
-- **Advanced filtering** - Filter by measurement type, technology type, file extensions (include/exclude)
+- **Advanced filtering** - Filter by measurement type, technology type, file extensions (include/exclude), and filename search strings
 - **Duplicate handling** - Automatically removes duplicate file entries from metadata queries
 - **Robust error handling** - Includes fallback download mechanisms and comprehensive error reporting
 - **Preview mode** - List files without downloading to preview what would be downloaded
+- **TSV file generation** - Creates downloadable file lists with direct download URLs when using `--list` mode
 
 The tool automatically creates a hierarchical directory structure that separates GeneLab processed data files from other data files (specified as "raw" in the outputs), making it easy to organize and access different types of data files.
 
@@ -102,6 +133,22 @@ python3 osdr_downloader.py --osd OSD-101 --exclude-ext tar.gz
 python3 osdr_downloader.py --osd OSD-101 --ext html
 ```
 
+#### Filename Search Filtering
+
+```bash
+# Download files containing 'counts' in the filename
+python3 osdr_downloader.py --osd OSD-101 --search counts
+
+# Download files excluding those with 'raw' in the filename
+python3 osdr_downloader.py --osd OSD-101 --exclude-search raw
+
+# Download differential expression files only
+python3 osdr_downloader.py --osd OSD-104 --measurement "transcription profiling" --search "differential_expression"
+
+# List normalized count files, excluding temporary files
+python3 osdr_downloader.py --osd OSD-101 --search normalized --exclude-search temp --list
+```
+
 #### Advanced Filtering
 
 ```bash
@@ -121,6 +168,9 @@ python3 osdr_downloader.py --osd OSD-101 --measurement "transcription profiling"
 # Exclude large raw data files, keep processed data
 python3 osdr_downloader.py --osd OSD-101 --exclude-ext tar.gz --exclude-ext fastq.gz
 
+# Download normalized count files, excluding raw and temporary files
+python3 osdr_downloader.py --osd OSD-101 --search normalized --exclude-search raw --exclude-search temp
+
 # Download to specific directory with verbose output
 python3 osdr_downloader.py --osd OSD-101 --out ~/research/osd-101 --list
 ```
@@ -134,6 +184,8 @@ python3 osdr_downloader.py --osd OSD-101 --out ~/research/osd-101 --list
 | `--tech` | String | No | Technology type filter (e.g., `"RNA-Seq"`, `"mass spectrometry"`, `"microarray"`) |
 | `--ext` | String | No | File extension to include (e.g., `csv`, `txt`, `html`, `fastq.gz`) |
 | `--exclude-ext` | String | No | File extension to exclude (e.g., `tar.gz`, `zip`, `fastqc.html`) |
+| `--search` | String | No | Search string to include in filename (e.g., `counts`, `normalized`, `differential_expression`) |
+| `--exclude-search` | String | No | Search string to exclude from filename (e.g., `raw`, `temp`, `backup`) |
 | `--out` | String | No | Custom output directory path (default: `osdr_downloads_OSD-#`) |
 | `--list` | Boolean | No | List files only, do not download (flag, no value needed) |
 
@@ -170,6 +222,18 @@ python3 osdr_downloader.py --osd OSD-101 --out ~/research/osd-101 --list
   - Reports: `html`, `pdf`
 - **Validation:** Cannot specify the same extension for both include and exclude
 
+#### `--search` and `--exclude-search`
+- **Search Strings:** Case-insensitive substring matching in filenames
+- **Common Search Terms:**
+  - Data types: `counts`, `normalized`, `differential_expression`, `metadata`
+  - Processing stages: `raw`, `processed`, `filtered`, `trimmed`
+  - File purposes: `sample`, `contrast`, `summary`, `qc`
+- **Validation:** Cannot specify the same string for both include and exclude
+- **Examples:**
+  - `--search counts` - Include only files with "counts" in the filename
+  - `--exclude-search temp` - Exclude files with "temp" in the filename
+  - `--search normalized --exclude-search backup` - Include normalized files but exclude backups
+
 #### `--out`
 - **Default Behavior:** Creates `osdr_downloads_OSD-XXX` in current directory
 - **Custom Path:** Can specify relative or absolute paths
@@ -178,6 +242,7 @@ python3 osdr_downloader.py --osd OSD-101 --out ~/research/osd-101 --list
 #### `--list`
 - **Boolean Flag:** No value required, presence of flag enables list mode
 - **Behavior:** Shows what would be downloaded without actually downloading
+- **TSV Generation:** Creates TSV files with download URLs when in list mode
 - **Use Case:** Preview files before committing to large downloads
 
 ## Output Files and Directory Structure
@@ -186,6 +251,7 @@ python3 osdr_downloader.py --osd OSD-101 --out ~/research/osd-101 --list
 
 ```
 osdr_downloads_OSD-XXX/
+├── OSD-XXX_measurement_technology_file_list.tsv  # Generated in --list mode
 └── measurement_technology/
     ├── GeneLab_processed_data_files/
     │   ├── GLDS-XXX_processed_file1.csv
@@ -196,6 +262,33 @@ osdr_downloads_OSD-XXX/
     └── metadata_file.txt
 ```
 
+### TSV File Output (List Mode)
+
+When using the `--list` parameter, the tool generates TSV files containing file information and download URLs:
+
+#### TSV File Format
+**Filename:** `OSD-XXX_measurement_technology_file_list.tsv`
+
+**Columns:**
+- `Filename` - Original filename as stored in OSDR
+- `Download_URL` - Direct download URL using OSDR's geode-py endpoint
+- `File_Size` - Human-readable file size (B, KB, MB, GB)
+- `Data_Type` - Data type classification from OSDR metadata
+- `GeneLab_Processed` - Yes/No indicator for GeneLab processed files
+
+#### Example TSV Content
+```
+Filename	Download_URL	File_Size	Data_Type	GeneLab_Processed
+GLDS-104_rna_seq_differential_expression.csv	https://osdr.nasa.gov/geode-py/ws/studies/OSD-104/download?source=datamanager&file=GLDS-104_rna_seq_differential_expression.csv	1.2MB	Differential expression	Yes
+GLDS-104_metadata_GLDS-104-ISA.zip	https://osdr.nasa.gov/geode-py/ws/studies/OSD-104/download?source=datamanager&file=GLDS-104_metadata_GLDS-104-ISA.zip	50.0MB	Metadata archive	No
+```
+
+#### TSV Usage
+- **Direct Downloads:** URLs can be used directly with `wget`, `curl`, or web browsers
+- **Batch Processing:** TSV files can be processed by other scripts or tools
+- **Data Analysis:** Import into spreadsheet applications or data analysis tools
+- **Archive Records:** Maintain records of available files and their metadata
+
 ### Directory Naming Convention
 
 - **Root Directory:** `osdr_downloads_OSD-XXX` (where XXX is the dataset number)
@@ -203,6 +296,7 @@ osdr_downloads_OSD-XXX/
   - Spaces replaced with underscores
   - Hyphens replaced with underscores
   - Example: `transcription_profiling_RNA_Seq`
+- **TSV Files:** `OSD-XXX_measurement_technology_file_list.tsv`
 
 ### File Organization
 
@@ -250,11 +344,14 @@ Files downloaded: 25
 Failed downloads: 0
 Output directory: osdr_downloads_OSD-101
 GeneLab processed files saved to subdirectories: */GeneLab_processed_data_files
+TSV file(s) created with download URLs
 
 Applied filters:
   Measurement type: transcription profiling
   Technology type: RNA-Seq
   File extension (exclude): tar.gz
+  Search string (include): counts
+  Search string (exclude): temp
 ============================================================
 ```
 
@@ -265,6 +362,7 @@ Each downloaded file retains:
 - **File size** information in download logs
 - **Data type** classification from OSDR metadata
 - **Measurement/technology** association through directory structure
+- **Download URL** preservation in TSV files for future reference
 
 ### Error Handling and Logs
 
@@ -284,3 +382,12 @@ Each downloaded file retains:
 **Size Verification:** Downloaded file sizes are compared against metadata when available
 **Format Preservation:** Files are downloaded in binary mode to preserve exact formatting
 **No Compression:** Files are downloaded as-is without additional compression or decompression
+
+### Download URL Format
+
+The tool uses OSDR's geode-py endpoint for downloads:
+```
+https://osdr.nasa.gov/geode-py/ws/studies/OSD-XXX/download?source=datamanager&file=filename
+```
+
+**Fallback Mechanism:** If the primary download URL fails, the tool attempts to use the REST API endpoint as a backup.

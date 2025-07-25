@@ -51,7 +51,8 @@ class OSdRDownloader:
     
     def build_metadata_query_url(self, osd: str, measurement: Optional[str] = None, 
                                 tech: Optional[str] = None, ext: Optional[str] = None, 
-                                exclude_ext: Optional[str] = None, genelab_only: bool = False) -> str:
+                                exclude_ext: Optional[str] = None, search: Optional[str] = None,
+                                exclude_search: Optional[str] = None, genelab_only: bool = False) -> str:
         """Build the metadata query URL for the OSDR API."""
         
         # Start with basic required parameters for metadata endpoint
@@ -101,15 +102,33 @@ class OSdRDownloader:
         if exclude_ext:
             regex_parts.append(f"file.file_name!=/\\.{exclude_ext}$/")
         
+        # Add search string filter if specified (filename contains this string)
+        if search:
+            regex_parts.append(f"file.file_name=/{search}/")
+        
+        # Add exclude search string filter if specified (filename does not contain this string)
+        if exclude_search:
+            regex_parts.append(f"file.file_name!={exclude_search}")
+        
         # Combine all parts without encoding the regex patterns
         all_parts = encoded_parts + regex_parts
         query_string = '&'.join(all_parts)
         return f"{self.base_url}/query/metadata/?{query_string}"
     
-    def build_file_download_url(self, filename: str) -> str:
-        """Build URL to download a specific file."""
-        encoded_filename = urllib.parse.quote(filename)
-        return f"{self.base_url}/query/data/?file.file_name={encoded_filename}"
+    def build_file_download_url(self, filename: str, remote_url: str = "", osd: str = "") -> str:
+        """Build URL to download a specific file using the remote_url from API response."""
+        if remote_url:
+            # Use the remote_url from API response and prepend the OSDR base URL
+            if remote_url.startswith('/'):
+                return f"https://osdr.nasa.gov{remote_url}"
+            elif remote_url.startswith('http'):
+                return remote_url
+            else:
+                return f"https://osdr.nasa.gov/{remote_url}"
+        else:
+            # Fallback to REST API if remote_url not available
+            encoded_filename = urllib.parse.quote(filename)
+            return f"{self.base_url}/query/data/?file.file_name={encoded_filename}"
     
     def is_genelab_processed(self, filename: str, data_type: str, file_category: str = "", protocol_ref: str = "") -> bool:
         """Check if a file is GeneLab processed data using protocol reference and file category."""
@@ -239,10 +258,11 @@ class OSdRDownloader:
     
     def query_files(self, osd: str, measurement: Optional[str] = None, 
                    tech: Optional[str] = None, ext: Optional[str] = None, 
-                   exclude_ext: Optional[str] = None) -> List[Dict]:
+                   exclude_ext: Optional[str] = None, search: Optional[str] = None,
+                   exclude_search: Optional[str] = None) -> List[Dict]:
         """Query files from the OSDR API using metadata endpoint."""
         
-        url = self.build_metadata_query_url(osd, measurement, tech, ext, exclude_ext)
+        url = self.build_metadata_query_url(osd, measurement, tech, ext, exclude_ext, search, exclude_search)
         print(f"Querying: {url}")
         
         try:
@@ -271,7 +291,8 @@ class OSdRDownloader:
             raise Exception(f"Failed to query API: {e}")
     
     def filter_results_manually(self, data: List[Dict], measurement: str, tech: str, 
-                               ext: Optional[str], exclude_ext: Optional[str]) -> List[Dict]:
+                               ext: Optional[str], exclude_ext: Optional[str],
+                               search: Optional[str], exclude_search: Optional[str]) -> List[Dict]:
         """Manually filter results when additional filtering is needed."""
         if not data:
             return data
@@ -289,6 +310,14 @@ class OSdRDownloader:
             if exclude_ext and filename.lower().endswith(f'.{exclude_ext.lower()}'):
                 continue
             
+            # Apply search string filter if specified (filename contains this string)
+            if search and search.lower() not in filename.lower():
+                continue
+            
+            # Apply exclude search string filter if specified (filename does not contain this string)
+            if exclude_search and exclude_search.lower() in filename.lower():
+                continue
+            
             # For measurement/tech filtering, we rely on the API query
             # since the records should already be filtered by the metadata endpoint
             filtered_data.append(record)
@@ -298,6 +327,10 @@ class OSdRDownloader:
             filters_applied.append(f"include .{ext}")
         if exclude_ext:
             filters_applied.append(f"exclude .{exclude_ext}")
+        if search:
+            filters_applied.append(f"include '{search}'")
+        if exclude_search:
+            filters_applied.append(f"exclude '{exclude_search}'")
         
         if filters_applied:
             filter_desc = " and ".join(filters_applied)
@@ -305,11 +338,74 @@ class OSdRDownloader:
         
         return filtered_data
     
-    def download_file(self, filename: str, filepath: str, file_record: Dict) -> bool:
-        """Download a single file using the data endpoint with exact filename."""
+    def create_tsv_file(self, data: List[Dict], output_dir: str, osd: str, 
+                       measurement: str = "unknown", tech: str = "unknown") -> str:
+        """Create a TSV file with filename and download link information."""
+        
+        if not data:
+            return ""
+        
+        # Create TSV filename
+        subdir_name = f"{measurement}_{tech}".replace(" ", "_").replace("-", "_")
+        tsv_filename = f"{osd}_{subdir_name}_file_list.tsv"
+        tsv_path = os.path.join(output_dir, tsv_filename)
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
         try:
-            # Use the new download URL format
-            download_url = self.build_file_download_url(filename)
+            with open(tsv_path, 'w', encoding='utf-8') as f:
+                # Write header
+                f.write("Filename\tDownload_URL\tFile_Size\tData_Type\tGeneLab_Processed\n")
+                
+                # Process unique files (remove duplicates)
+                seen_files = set()
+                unique_files = []
+                
+                for record in data:
+                    filename = record.get('file.file_name')
+                    if filename and filename not in seen_files:
+                        seen_files.add(filename)
+                        unique_files.append(record)
+                
+                # Write file information
+                for record in unique_files:
+                    filename = record.get('file.file_name', '')
+                    file_size = record.get('file.file_size', '')
+                    data_type = record.get('file.data_type', '')
+                    file_category = record.get('file.category', '')
+                    protocol_ref = record.get('assay.protocol ref', '')
+                    
+                    if not filename:
+                        continue
+                    
+                    # Build download URL using the remote_url from API response
+                    remote_url = record.get('file.remote_url', '')
+                    download_url = self.build_file_download_url(filename, remote_url, osd)
+                    
+                    # Check if GeneLab processed
+                    is_genelab = self.is_genelab_processed(filename, data_type, file_category, protocol_ref)
+                    genelab_status = "Yes" if is_genelab else "No"
+                    
+                    # Format file size
+                    size_str = self.format_size(file_size) if file_size else "Unknown"
+                    
+                    # Write TSV row
+                    f.write(f"{filename}\t{download_url}\t{size_str}\t{data_type}\t{genelab_status}\n")
+            
+            print(f"✓ Created TSV file: {tsv_path}")
+            return tsv_path
+            
+        except Exception as e:
+            print(f"✗ Failed to create TSV file: {e}")
+            return ""
+    
+    def download_file(self, filename: str, filepath: str, file_record: Dict, osd: str = "") -> bool:
+        """Download a single file using the remote_url from API response."""
+        try:
+            # Get remote_url from the file record
+            remote_url = file_record.get('file.remote_url', '')
+            download_url = self.build_file_download_url(filename, remote_url, osd)
             
             print(f"  Downloading {filename}...")
             print(f"  URL: {download_url}")
@@ -330,33 +426,27 @@ class OSdRDownloader:
         except Exception as e:
             print(f"  ✗ Failed to download {filename}: {e}")
             
-            # Try alternative download using remote URL if available
-            remote_url = file_record.get('file.remote_url')
-            if remote_url:
-                try:
-                    print(f"  Trying alternative URL: {remote_url}")
-                    if not remote_url.startswith('http'):
-                        full_url = f"https://visualization.osdr.nasa.gov{remote_url}"
-                    else:
-                        full_url = remote_url
-                    
-                    response = self.session.get(full_url, stream=True, timeout=60)
-                    response.raise_for_status()
-                    
-                    with open(filepath, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                    
-                    print(f"  ✓ Downloaded via alternative URL: {filename}")
-                    return True
-                    
-                except Exception as e2:
-                    print(f"  ✗ Alternative download also failed: {e2}")
-            
-            return False
+            # Try alternative download using REST API if remote URL fails
+            try:
+                print(f"  Trying REST API fallback...")
+                fallback_url = f"{self.base_url}/query/data/?file.file_name={urllib.parse.quote(filename)}"
+                print(f"  Fallback URL: {fallback_url}")
+                response = self.session.get(fallback_url, stream=True, timeout=60)
+                response.raise_for_status()
+                
+                with open(filepath, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        f.write(chunk)
+                
+                print(f"  ✓ Downloaded via REST API fallback: {filename}")
+                return True
+                
+            except Exception as e2:
+                print(f"  ✗ REST API fallback also failed: {e2}")
+                return False
     
     def process_files(self, data: List[Dict], output_dir: str, list_only: bool = False, 
-                     measurement: str = "unknown", tech: str = "unknown") -> Dict:
+                     measurement: str = "unknown", tech: str = "unknown", osd: str = "") -> Dict:
         """Process the files from API response."""
         
         if not data:
@@ -420,15 +510,20 @@ class OSdRDownloader:
             
             if not list_only:
                 filepath = os.path.join(target_dir, filename)
-                if self.download_file(filename, filepath, record):
+                if self.download_file(filename, filepath, record, osd):
                     stats['downloaded'] += 1
                 else:
                     stats['failed'] += 1
+        
+        # Create TSV file if in list mode
+        if list_only and unique_files:
+            self.create_tsv_file(unique_files, output_dir, osd, measurement, tech)
         
         return stats
     
     def run(self, osd: str, measurement: Optional[str] = None, tech: Optional[str] = None, 
             ext: Optional[str] = None, exclude_ext: Optional[str] = None, 
+            search: Optional[str] = None, exclude_search: Optional[str] = None,
             output_dir: Optional[str] = None, list_only: bool = False):
         """Main execution method."""
         
@@ -447,8 +542,8 @@ class OSdRDownloader:
         # If measurement and tech are specified, download for that specific combination
         if measurement and tech:
             try:
-                data = self.query_files(osd, measurement, tech, ext, exclude_ext)
-                stats = self.process_files(data, output_dir, list_only, measurement, tech)
+                data = self.query_files(osd, measurement, tech, ext, exclude_ext, search, exclude_search)
+                stats = self.process_files(data, output_dir, list_only, measurement, tech, osd)
                 
                 # Update total stats
                 for key in total_stats:
@@ -469,8 +564,8 @@ class OSdRDownloader:
             for m, t in matching_combinations:
                 try:
                     print(f"\nProcessing {m} / {t}...")
-                    data = self.query_files(osd, m, t, ext, exclude_ext)
-                    stats = self.process_files(data, output_dir, list_only, m, t)
+                    data = self.query_files(osd, m, t, ext, exclude_ext, search, exclude_search)
+                    stats = self.process_files(data, output_dir, list_only, m, t, osd)
                     
                     # Update total stats
                     for key in total_stats:
@@ -490,8 +585,8 @@ class OSdRDownloader:
             for measurement, tech in combinations:
                 try:
                     print(f"\nProcessing {measurement} / {tech}...")
-                    data = self.query_files(osd, measurement, tech, ext, exclude_ext)
-                    stats = self.process_files(data, output_dir, list_only, measurement, tech)
+                    data = self.query_files(osd, measurement, tech, ext, exclude_ext, search, exclude_search)
+                    stats = self.process_files(data, output_dir, list_only, measurement, tech, osd)
                     
                     # Update total stats
                     for key in total_stats:
@@ -501,11 +596,11 @@ class OSdRDownloader:
                     print(f"Error processing {measurement}/{tech}: {e}")
         
         # Print summary
-        self.print_summary(osd, total_stats, output_dir, list_only, measurement, tech, ext, exclude_ext)
+        self.print_summary(osd, total_stats, output_dir, list_only, measurement, tech, ext, exclude_ext, search, exclude_search)
     
     def print_summary(self, osd: str, stats: Dict, output_dir: str, list_only: bool,
                      measurement: Optional[str], tech: Optional[str], ext: Optional[str], 
-                     exclude_ext: Optional[str]):
+                     exclude_ext: Optional[str], search: Optional[str], exclude_search: Optional[str]):
         """Print summary statistics."""
         print(f"\n{'='*60}")
         print("Summary Report:")
@@ -521,6 +616,10 @@ class OSdRDownloader:
             print(f"Output directory: {output_dir}")
             if stats['genelab'] > 0:
                 print(f"GeneLab processed files saved to subdirectories: */GeneLab_processed_data_files")
+        else:
+            print(f"Output directory: {output_dir}")
+            if stats['total'] > 0:
+                print(f"TSV file(s) created with download URLs")
         
         print(f"\nApplied filters:")
         if measurement:
@@ -531,7 +630,11 @@ class OSdRDownloader:
             print(f"  File extension (include): {ext}")
         if exclude_ext:
             print(f"  File extension (exclude): {exclude_ext}")
-        if not measurement and not tech and not ext and not exclude_ext:
+        if search:
+            print(f"  Search string (include): {search}")
+        if exclude_search:
+            print(f"  Search string (exclude): {exclude_search}")
+        if not measurement and not tech and not ext and not exclude_ext and not search and not exclude_search:
             print(f"  None (all files)")
         
         print(f"{'='*60}")
@@ -556,6 +659,12 @@ Examples:
   # Download all files except large tar.gz files
   python osdr_downloader.py --osd OSD-101 --exclude-ext tar.gz
   
+  # Download files containing 'counts' in filename
+  python osdr_downloader.py --osd OSD-101 --search counts
+  
+  # Download files excluding those with 'raw' in filename
+  python osdr_downloader.py --osd OSD-101 --exclude-search raw
+  
   # Download all files to custom directory
   python osdr_downloader.py --osd OSD-101 --out ./my_downloads
         """
@@ -571,6 +680,10 @@ Examples:
                        help="File extension to include (e.g., 'csv', 'fastq.gz')")
     parser.add_argument("--exclude-ext", 
                        help="File extension to exclude (e.g., 'tar.gz', 'zip')")
+    parser.add_argument("--search", 
+                       help="Search string to include in filename (e.g., 'counts', 'normalized')")
+    parser.add_argument("--exclude-search", 
+                       help="Search string to exclude from filename (e.g., 'raw', 'temp')")
     parser.add_argument("--out", 
                        help="Output directory (default: osdr_downloads_OSD-#)")
     parser.add_argument("--list", action="store_true", 
@@ -588,6 +701,11 @@ Examples:
         print("Error: --ext and --exclude-ext cannot be the same extension")
         sys.exit(1)
     
+    # Validate that search and exclude_search are not the same
+    if args.search and args.exclude_search and args.search.lower() == args.exclude_search.lower():
+        print("Error: --search and --exclude-search cannot be the same string")
+        sys.exit(1)
+    
     # Create downloader and run
     downloader = OSdRDownloader()
     downloader.run(
@@ -596,6 +714,8 @@ Examples:
         tech=args.tech,
         ext=args.ext,
         exclude_ext=args.exclude_ext,
+        search=args.search,
+        exclude_search=args.exclude_search,
         output_dir=args.out,
         list_only=args.list
     )
